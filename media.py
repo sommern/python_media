@@ -1,7 +1,10 @@
 # -*- coding: utf-8 -*-
 
-# Xavier CSCI 170 9/14/2022
-#   Changes:
+# Xavier CSCI 170 changes
+#  9/19/2022:
+#     * Fixed zooming when using PySide6
+#
+#  9/14/2022:
 #     * Uses either PySide6 or PyQt5
 #     * Sound support was removed
 
@@ -2671,9 +2674,9 @@ class PictureExplorer(QtWidgets.QWidget):
     def updateZoom(self, zoomRate):
         self.drawingPic.width = int(self.imageSize.width()*zoomRate)
         self.drawingPic.height = int(self.imageSize.height()*zoomRate)
-        self.drawingPic.image = QtGui.QImage(self.fixedPixmap.scaled(\
-            self.drawingPic.width, self.drawingPic.height,\
-            QtCore.Qt.KeepAspectRatioByExpanding))
+        self.drawingPic.image = QtGui.QImage(self.fixedPixmap.scaled(
+            self.drawingPic.width, self.drawingPic.height,
+            QtCore.Qt.KeepAspectRatioByExpanding).toImage())
         self.pic = self.drawingPic
         self.xwidget.setRange(0, self.drawingPic.getWidth()-1)
         self.ywidget.setRange(0, self.drawingPic.getHeight()-1)
