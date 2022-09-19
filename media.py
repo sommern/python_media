@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
 
+# Xavier CSCI 170 9/14/2022
+#   Changes:
+#     * Uses either PySide6 or PyQt5
+#     * Sound support was removed
+
 # WOOSTER VERSION 1.0.1
 #   Enhancements:
 #       * Thonny compatibility for GUI features
@@ -89,25 +94,19 @@ import time
 import traceback
 
 try:
-    #Use Qt for everything
-    #Attempt to use PyQt5
     import PyQt5.QtGui as QtGui
     import PyQt5.QtCore as QtCore
     import PyQt5.QtWidgets as QtWidgets
     import PyQt5.QtMultimedia as QtMultimedia #This is for sound/video
-    Qt_VERSION = 5
+    Qt_VERSION = 5    
 except ImportError:
-    #Use Qt4 for everything
-    import PyQt4.QtGui as QtGui
-    QtWidgets = QtGui
-    import PyQt4.QtCore as QtCore
-    import PyQt4.QtMultimedia as QtMultimedia #This is for sound/video
-    Qt_VERSION = 4
-    #Don't Use PIL for images
-    #except one case
-    import PIL
-
-import wave #This is for reading sound file metadata
+    try:
+        import PySide6.QtGui as QtGui
+        import PySide6.QtCore as QtCore
+        import PySide6.QtWidgets as QtWidgets
+        Qt_VERSION = 6
+    except ImportError:
+        sys.exit('Could not import PyQt5 or PySide6, install one or the other.')
 
 # Create an PyQt application object.
 #If we're running in Canopy, there already is one
@@ -360,997 +359,6 @@ def sleep(secs):
     while time.time() - cur_time < secs:
         QtWidgets.QApplication.processEvents()
 
-#Sample class
-#A Sample knows its value, its position, and the Sound it's from
-class Sample:
-    #Constructor
-    #Takes a Sound and a position
-    #Finds the value
-    def __init__(self, sound, pos):
-        self.sound = sound
-        self.pos = pos
-        self.value = sound.getSampleValue(pos)
-    
-    #Convert to a printable string
-    def __str__(self):
-        return 'Sample at ' + str(self.pos) + ' with value ' + str(self.value)
-    
-    #Get the Sample's value
-    def getValue(self):
-        return self.value
-    
-    #Set the Sample's value
-    def setValue(self, newVal):
-        #Update the Sound
-        self.sound.setSampleValueRaw(self.pos, newVal)
-        #Update the Sample's internal value
-        self.value = newVal
-    
-    #Get the Sound object
-    def getSound(self):
-        return self.sound
-    
-    #Get the position
-    def getIndex(self):
-        return self.pos
-
-#Sound class
-#Only supports WAV for now
-class Sound:
-    #Constants
-    SAMPLE_RATE = 22050
-    NUM_CHANNELS = 1
-    SAMPLE_SIZE = 16
-    
-    #Default audio output device
-    AUDIO_DEVICE = QtMultimedia.QAudioDeviceInfo.defaultOutputDevice()
-    
-    #Constructor
-    def __init__(self, arg1, arg2 = None):
-        #arg1 can be a filename, a number of samples, or a Sound
-        #arg2, if provided, is a sample rate
-        #super().__init__()
-        if isinstance(arg1, Sound):
-            #arg1 is a Sound. Copy it.
-            self.fileName = None #It doesn't duplicate this part
-            # #Instead, use a temporary file, which gets changed
-            # #if they save the sound
-            # self.tempfile = tempfile.mkstemp(suffix = '.wav')
-            #self.file = QFile(arg1.fileName)
-            self.numSamples = arg1.numSamples
-            self.sampleRate = arg1.sampleRate
-            self.sampleSize = arg1.sampleSize
-            self.numChannels = arg1.numChannels
-            #Copy the raw data
-            self.data = bytearray(arg1.data)
-            #self.writeFile(self.tempfile[1])
-            #self.file = QFile(self.tempfile[1])
-        elif isinstance(arg1, str):
-            #arg1 is a file name
-            self.fileName = arg1
-            #self.file = QFile(self.fileName)
-            #Get the metadata
-            wav = wave.open(self.fileName)
-            self.sampleRate = wav.getframerate()
-            self.sampleSize = wav.getsampwidth() * 8
-            self.numChannels = wav.getnchannels()
-            self.numSamples = wav.getnframes()*self.numChannels
-            #Get the raw data
-            self.data = bytearray(wav.readframes(self.numSamples))
-            wav.close()
-        elif isinstance(arg1, int):
-            #arg1 is a number of samples
-            self.numSamples = arg1
-            # #Apparently the number of samples needs to be even or everything breaks?
-            # if self.numSamples % 2 == 1:
-            #     self.numSamples += 1
-            if arg2 is None:
-                self.sampleRate = Sound.SAMPLE_RATE
-            else:
-                self.sampleRate = arg2
-            self.fileName = None
-            self.numChannels = Sound.NUM_CHANNELS
-            self.sampleSize = Sound.SAMPLE_SIZE
-            #Blank data
-            self.data = bytearray([0 for i in range(self.numSamples * self.sampleSize)])
-            #self.file = None
-            # #Use a temporary file, which gets changed
-            # #if they save the sound
-            # #TODO instead just send the sound data directly
-            # self.tempfile = tempfile.mkstemp(suffix = '.wav')
-            
-        self.setUpFormat()
-        #Tuples (QBuffer, QByteArray, QAudioOutput) used for playing multiple instances
-        self.buffs = []
-        #Cleanup lock
-        self.cleanupLock = threading.Lock()
-        #self.isPlaying = False
-        #Set up "Samples" representation of data
-        #This is clunky but "necessary" for efficiency of JES operations
-        self.setUpSampleObjects()
-        # #For blocking play
-        # self.blockEvent = None
-        if self.numChannels == 2:
-            print("Warning: Your sound is stereo")
-        if self.sampleRate != Sound.SAMPLE_RATE:
-            print("Warning: Your sound does not have sample rate %d; it's %d"%\
-                (Sound.SAMPLE_RATE, self.sampleRate))
-        if self.sampleSize != Sound.SAMPLE_SIZE:
-            print("Warning: Your sound does not have sample size %d; it's %d"%\
-                (Sound.SAMPLE_SIZE, self.sampleSize))
-    
-    def setUpFormat(self):
-        #Create the audio format
-        self.format = QtMultimedia.QAudioFormat()
-        self.format.setCodec('audio/pcm')
-        self.format.setSampleRate(self.sampleRate)
-        self.format.setSampleSize(self.sampleSize)
-        self.format.setChannelCount(self.numChannels)
-        #This is a WAV thing
-        if self.sampleSize == 8:
-            self.format.setSampleType(QtMultimedia.QAudioFormat.UnSignedInt)
-            self.min_sample = 0
-            self.max_sample = 256
-        #elif self.sampleSize == 16:
-        else:
-            self.format.setSampleType(QtMultimedia.QAudioFormat.SignedInt)
-            self.min_sample = -2**(self.sampleSize-1)
-            self.max_sample = 2**(self.sampleSize-1)-1
-        self.format.setByteOrder(QtMultimedia.QAudioFormat.LittleEndian)
-        #print(self.sampleRate, self.sampleSize, self.numChannels)
-    
-    #Convert to string
-    def __str__(self):
-        ret = "Sound"
-        fileName = self.fileName
-
-        #if there is a file name then add that to the output
-        if fileName is not None:
-            ret = ret + " file: " + fileName
-
-        #add the length in frames
-        ret = ret + " number of samples: " + str(self.getLengthInFrames())
-
-        return ret
-    
-    #Number of sample
-    def getLengthInFrames(self):
-        return self.numSamples
-    
-    #Get a "slice" of the raw data
-    def getDataSlice(self, start, stop):
-        return self.data[start * (self.sampleSize//8):stop * (self.sampleSize//8)]
-    
-    #Play the sound
-    #Do nothing if it's already playing
-    #Play from start to stop (default is the whole sound)
-    def play(self, start=0, stop=0):
-        #if not self.isPlaying:
-        
-        ##Clean up zombie processes, if somehow there are some
-        #self.cleanUpResources()
-        
-        #Make start and stop both positive
-        if start < 0:
-            newStart = self.numSamples + start
-        else:
-            newStart = start
-        if stop <= 0:
-            newStop = self.numSamples + stop
-        else:
-            newStop = stop
-                
-        qba = QtCore.QByteArray(self.getDataSlice(newStart, newStop))
-        buff = QtCore.QBuffer(qba)
-        audioOutput = QtMultimedia.QAudioOutput(Sound.AUDIO_DEVICE, self.format)
-        self.buffs.append((buff, qba, audioOutput))
-        #print("Still alive")
-        #worked = self.file.open(QIODevice.ReadOnly)
-        #worked = self.buff.open(QIODevice.ReadOnly)
-        worked = self.buffs[-1][0].open(QtCore.QIODevice.ReadOnly)
-        if not worked:
-            #Clean up the corrupted buffer
-            del self.buffs[-1]
-            raise IOError("Failed to open sound data stream")
-        #print(worked)
-        
-        #Is it supported?
-        if not Sound.AUDIO_DEVICE.isFormatSupported(self.format):
-            #Clean up the corrupted buffer
-            del self.buffs[-1]
-            raise RuntimeError("Sound format not supported")
-    
-        #self.audioOutput = QAudioOutput(Sound.AUDIO_DEVICE, self.format)
-        
-        #worked = QObject.connect(self.audioOutput, SIGNAL('stateChanged(QAudio.State)'), self, SLOT('finishedPlaying()'))
-        #worked = QObject.connect(self.audioOutput, SIGNAL('stateChanged'), self, SLOT('finishedPlaying(int)'))
-        #worked = self.audioOutput.stateChanged.connect(self.finishedPlaying)
-        #self.audioOutput.stateChanged.connect(self.finishedPlaying)
-        self.buffs[-1][-1].stateChanged.connect(self.finishedPlaying)
-        #if not worked:
-        #    raise RuntimeError("Signal binding failed")
-        #connect(audioOutput,SIGNAL(stateChanged(QAudio.State)),SLOT(finishedPlaying(QAudio.State)))
-        #self.audioOutput.start(self.file)
-        #self.audioOutput.start(self.buffs[-1][0])
-        self.buffs[-1][-1].start(self.buffs[-1][0])
-        QtWidgets.QApplication.processEvents()
-            #self.isPlaying = True
-        #return audioOutput
-    
-    #Plays a sound, and blocks until done
-    def blockingPlay(self, start=0, stop=0):
-        #thrd = threading.Thread(target = self.play())
-        #thrd.start()
-        #self.blockingEvent = threading.Event()
-        self.play(start, stop)
-        # cv = threading.Condition()
-        # cv.acquire()
-        # while len(self.buffs) > 0:
-        #     cv.wait(0.01)
-        # #cv.wait_for(lambda: len(self.buffs) == 0)
-        # cv.release()
-        while len(self.buffs) > 0:
-            #Hang around here
-            QtWidgets.QApplication.processEvents() #YES!!!!!
-        #self.blockingEvent.wait()
-        #self.blockingEvent = None
-        #thrd.join()
-        #time.sleep(2)
-    
-    #Is the sound currently playing?
-    def isPlaying(self):
-        return len(self.buffs) > 0
-    
-    #Stop the sound from playing (however many times it's currently playing)
-    def stopPlaying(self):
-        #Acquire the cleanup lock
-        self.cleanupLock.acquire()
-        try:
-            #Clean up ALL instances of playing the sound
-            buffs = list(self.buffs)
-            for i in range(len(buffs)-1, -1, -1):
-                self.buffs[i][-1].stop()
-                self.buffs[i][0].close()
-                del self.buffs[i]
-        finally:
-            #Release the lock
-            self.cleanupLock.release()
-    
-    #Go through the list of playing sound resources and destroy
-    #the ones that have finished playing
-    def cleanUpResources(self):
-        #Acquire lock; don't want multiple threads in here at once
-        self.cleanupLock.acquire()
-        try:
-            #Clean up finished instances of playing the sound
-            buffs = list(self.buffs)
-            for i in range(len(buffs)-1, -1, -1):
-                if buffs[i][0].atEnd():
-                    #This one's done
-                    self.buffs[i][0].close()
-                    self.buffs[i][-1].stop()
-                    del self.buffs[i]
-            # if len(self.buffs) == 0 and self.blockingEvent is not None:
-            #     #Wake up the block!
-            #     self.blockingEvent.set()
-        finally:
-            QtWidgets.QApplication.processEvents()
-            #Release the lock
-            self.cleanupLock.release()
-    
-    #It was working with files, but failed with buffers (triggered too soon)
-    #Workaround is to manually call the clean up method
-    def finishedPlaying(self, state):
-        #print("yo", state)
-        #state = self.audioOutput.state()
-        #Is it finished?
-        if state == QtMultimedia.QAudio.IdleState:
-            # self.audioOutput.stop()
-            # #self.file.close()
-            # self.buff.close()
-            # self.isPlaying = False
-            # print("It's done!")
-            self.cleanUpResources()
-    
-    #Write this sound to the given
-    def writeToFile(self, fil):
-        fd = wave.open(fil, 'wb')
-        fd.setnchannels(self.numChannels)
-        fd.setnframes(self.numSamples)
-        fd.setframerate(self.sampleRate)
-        fd.setsampwidth(self.sampleSize // 8)
-        fd.writeframes(self.data)
-        fd.close()
-    
-    #Represent the sound as an image of the given dimensions
-    #Used by Sound Explorer
-    def getImageRep(self, width, height):
-        #Find the height in the image of a given sample value
-        def findY(sval):
-            if self.sampleSize == 8:
-                return int((-height/256)*sval + height-1)
-            #elif self.sampleSize == 16:
-            #    return int((-height/65536)*sval + height/2)
-            else:
-                return int((-height/(2**self.sampleSize))*sval + height/2)
-        
-        #Create an empty black picture
-        #ret = makeEmptyPicture(width, height, black)
-        #(Hieu) using QPixmap instead of creating a Picture object !!!!!!
-        #ret = makeEmptyPicture2(width, height, black)
-        ret = QtGui.QPixmap(width,height)
-        ret.fill(QtGui.QColor(*black.getRGB()))
-        
-        #Add the waveform, adjusted for proper step size
-        lastY = findY(getSampleValueAt(self, 0))
-        stepSize = max(self.numSamples // width, 1)
-        for i in range(stepSize, self.numSamples, stepSize):
-            curY = findY(getSampleValueAt(self, i))
-            addLine1(ret, i//stepSize-1, lastY, i//stepSize, curY, white)
-            lastY = curY
-            
-        #Add the zero line
-        if self.sampleSize == 8:
-            addLine1(ret, 0, height-1, width-1, height-1, cyan)
-        #elif self.sampleSize == 16:
-        else:
-            addLine1(ret, 0, height//2, width-1, height//2, cyan)
-        
-        return ret
-    
-    def setUpSampleObjects(self):
-        ss = self.sampleSize // 8
-        if len(self.data) % ss != 0:
-            #The samples are corrupted
-            raise ValueError("You have half a sample at the end. Not sure why.")
-        self.samples = []
-        #Convert the binary stream to integers by sample size
-        #Make sure to use two's complement
-        for i in range(self.numSamples):
-            self.samples.append(Sample(self, i))
-    
-    #Get the ith sample value
-    def getSampleValue(self, i):
-        if self.sampleSize == 8:
-            #This is easy
-            val = int(self.data[i])
-        #elif self.sampleSize == 16:
-        else:
-            #This is harder
-            #val = int.from_bytes(self.data[2*i:2*i+2], 'little', signed=True)
-            nbytes = self.sampleSize//8
-            val = int.from_bytes(self.data[nbytes*i:nbytes*i+nbytes], 'little', signed=True)
-            # val = self.data[2*i] * 256 + self.data[2*i+1]
-            # if val >= 32768:
-            #     #Need to make it be negative
-            #     val -= 65536
-        return val
-    
-    def getSample(self, i):
-        return self.samples[i]
-    
-    #Get all the samples, as a list
-    #DO NOT PRINT THIS!!!
-    def getSamples(self):
-        # ss = self.sampleSize // 8
-        # if len(self.data) % ss != 0:
-        #     #The samples are corrupted
-        #     raise ValueError("You have half a sample at the end. Not sure why.")
-        # ret = []
-        # #Convert the binary stream to integers by sample size
-        # #Make sure to use two's complement
-        # for i in range(self.numSamples):
-        #     ret.append(self.getSample(i))
-        # return ret
-        return self.samples
-    
-    #Set a sample value
-    #DOES change the Sample objects
-    def setSampleValue(self, pos, value):
-        #Clipping
-        val = value
-        if val < self.min_sample:
-            val = self.min_sample
-        elif val > self.max_sample:
-            val = self.max_sample
-        # if val < -32768:
-        #     val = -32768
-        # elif val > 32767:
-        #     val = 32767
-        self.samples[pos].setValue(val)
-    
-    #Set the value of the sample at position pos to value
-    #DO NOT CALL THIS IF YOU ARE USING Sample OBJECTS!
-    #This is called by Sample to update the Sound
-    #It will desync the Sample objects if you call it directly
-    def setSampleValueRaw(self, pos, value):
-        if self.sampleSize == 8:
-            #This is easy
-            self.data[pos] = value
-        #elif self.sampleSize == 16:
-        else:
-            #This is harder
-            # #First, un-two's-complement it
-            # val = value
-            # if val < 0:
-            #     val = val + 65536
-            # #Then, extract the bytes
-            # hiByte = val // 256
-            # loByte = val % 256
-            # #Finally, set the data
-            # self.data[2*pos] = hiByte
-            # self.data[2*pos+1] = loByte
-            nbytes = self.sampleSize//8
-            val = value.to_bytes(nbytes, 'little', signed=True)
-            self.data[nbytes*pos:nbytes*pos+nbytes]  = val
-            #val = value.to_bytes(2, 'little', signed=True)
-            #self.data[2*pos:2*pos+2]  = val
-    
-    #What is the sample size, in bits? 
-    #the maximum amplitude (sample value) to be stored (in bits) at each sample (max value for 16 bits is 32767)
-    def getSampleSize(self):
-        return self.sampleSize
-        
-    #What is the sampling rate?
-    #The rate at which samples are collected is the sample rate (# of samples/duration of sound) 
-    def getSamplingRate(self):
-        return self.sampleRate
-    
-    #DOES change the Sample objects
-    #TODO: raise error for incompatible rate - only support for rate =0.5, 2 now
-    def setSamplingRate(self, rate):
-        self.sampleRate = int(self.sampleRate * rate)
-      
-    #(Hieu) Plays the specified segment of this sound at the given sample rat (only support for rate =2.0, 0.5).
-    #TODO: Still don't know why the sound still keep original setting (sample rate) when it finish
-    def playAtRateInRange(self, rate, start=0, stop=0, isBlocking=0):
-        self.setSamplingRate(rate)
-        self.setUpFormat()
-        if isBlocking:
-            self.blockingPlay(start, stop)
-        else: 
-            self.play(start, stop)
-        # while(not self.isPlaying()):
-        #     a = 1
-        # self.setSamplingRate(1.0/rate)
-        # self.setUpFormat()
-    
-    #Print the metadata of the sound
-    def printMetadata(self):
-        if self.numChannels == 2:
-            print("Num Samples: %d (%d per channel)"%\
-                (self.numSamples, self.numSamples//2))
-        else:
-            print("Num Samples: %d"%self.numSamples)
-        print("Sample Rate: %d"%self.sampleRate)
-        print("Sample Size: %d"%self.sampleSize)
-        print("Num Channels: %d"%self.numChannels)
- 
-                                   
-##
-## Global sound functions
-##
-#Done
-def makeSound(filename):
-    """
-        Takes a filename as input, reads the file, and creates a sound from it.
-        Returns the sound.
-
-        :param filename: a string path of a wav file
-        :return: the sound created from the file at the given path
-    """
-    global mediaFolder
-    if not isinstance(filename, str):
-        repTypeError("makeSound(filename): argument not a string: "+str(filename))
-    if not os.path.isabs(filename):
-        filename = mediaFolder + filename
-    if not os.path.isfile(filename):
-        #print("There is no file at "+filename)
-        #raise ValueError
-        repValError("There is no file at "+filename)
-    return Sound(filename)
-
-
-# MMO (1 Dec 2005): capped size of sound to 600
-# Brian O (29 Apr 2008): changed first argument to be number of samples, added optional 2nd argument of sampling rate
-#Done
-def makeEmptySound(numSamples, samplingRate = Sound.SAMPLE_RATE):
-    """
-        Takes one or two integers as input. Returns an empty Sound object with
-        the given number of samples and (optionally) the given sampling rate.
-        Default rate is 22050 bits/second. The resulting sound must not be longer
-        than 600 seconds. Prints an error statement if numSamples or
-        samplingRate are less than 0, or if (numSamples/samplingRate) > 600.
-
-        :param numSamples: the number of samples in the sound
-        :param samplingRate: the integer value representing the number of samples
-                                per second (optional)
-        :return: an empty sound with the given number of samples and sampling rate
-    """
-    if numSamples <= 0 or samplingRate <= 0:
-        #print("makeEmptySound(numSamples[, samplingRate]): numSamples and samplingRate must each be greater than 0")
-        #raise ValueError
-        repValError("makeEmptySound(numSamples[, samplingRate]): numSamples and samplingRate must each be greater than 0")
-    if (numSamples/samplingRate) > 600:
-        #print("makeEmptySound(numSamples[, samplingRate]): Created sound must be less than 600 seconds")
-        #raise ValueError
-        repValError("makeEmptySound(numSamples[, samplingRate]): Created sound must be less than 600 seconds") 
-    if not isinstance(numSamples, int):
-        repTypeError("makeEmptySound(numSamples[, samplingRate]): numSamples must be an integer")  
-    if not isinstance(samplingRate, int):
-        repTypeError("makeEmptySound(numSamples[, samplingRate]): samplingRate must be an integer")  
-    return Sound(numSamples, samplingRate)
-#    if size > 600:
-#        #print "makeEmptySound(size): size must be 600 seconds or less"
-#        #raise ValueError
-#        repValError("makeEmptySound(size): size must be 600 seconds or less")
-#    return Sound(size * Sound.SAMPLE_RATE)
-
-
-# Brian O (5 May 2008): Added method for creating sound by duration
-#Done
-def makeEmptySoundBySeconds(seconds, samplingRate = Sound.SAMPLE_RATE):
-    """
-        Takes a floating point number and optionally an integer as input. Returns
-        an empty Sound object of the given duration and (optionally) the given
-        sampling rate. Default rate is 22050 bits/second. If the given arguments
-        do not multiply to an integer, the number of samples is rounded up.
-        Prints an error statement if duration or samplingRate are less than 0,
-        or if duration > 600
-
-        :param seconds: the time in seconds for the duration of the sound
-        :param samplingRate: the integer value representing the number of samples
-                                per second of sound (optional)
-        :return: an empty sound
-    """
-    if seconds <= 0 or samplingRate <= 0:
-        #print("makeEmptySoundBySeconds(numSamples[, samplingRate]): numSamples and samplingRate must each be greater than 0")
-        #raise ValueError
-        repValError("makeEmptySoundBySeconds(numSamples[, samplingRate]): numSamples and samplingRate must each be greater than 0")
-    if seconds > 600:
-        #print("makeEmptySoundBySeconds(numSamples[, samplingRate]): Created sound must be less than 600 seconds")
-        #raise ValueError
-        repValError("makeEmptySoundBySeconds(numSamples[, samplingRate]): Created sound must be less than 600 seconds")
-    return Sound(int(seconds * samplingRate), samplingRate)
-
-
-# PamC: Added this function to duplicate a sound
-#Done
-def duplicateSound(sound):
-    """
-        Takes a sound as input and returns a new Sound object with the same
-        Sample values as the original.
-
-        :param sound: the sound you want to duplicate
-        :return: a new Sound object with the same Sample values as the original
-    """
-    if not isinstance(sound, Sound):
-        #print("duplicateSound(sound): Input is not a sound")
-        #raise ValueError
-        repTypeError("duplicateSound(sound): Input is not a sound")
-    return Sound(sound)
-
-#NEW
-#Print the metadata of a Sound
-def printSoundMetadata(sound):
-    """
-        Takes a sound as input and displays the number of samples, sample rate,
-        sample size, and number of channels (1 or 2) of the sound.
-
-        :param sound: A Sound, the sound you want to extract the samples from
-        :return: A collection of all the samples in the sound
-    """
-    if not isinstance(sound, Sound):
-        #print("getSamples(sound): Input is not a sound")
-        #raise ValueError
-        repTypeError("getSoundMetadata(sound): Input is not a sound")
-    sound.printMetadata()
-
-#Done
-def getSamples(sound):
-    """
-        Takes a sound as input and returns the Samples in that sound.
-
-        :param sound: A Sound, the sound you want to extract the samples from
-        :return: A collection of all the samples in the sound
-    """
-    if not isinstance(sound, Sound):
-        #print("getSamples(sound): Input is not a sound")
-        #raise ValueError
-        repTypeError("getSamples(sound): Input is not a sound")
-    return sound.getSamples()
-
-
-#Done
-def play(sound):
-    """
-        Plays a sound provided as input.
-
-        :param sound: the sound you want to be played
-    """
-    if not isinstance(sound,Sound):
-        #print "play(sound): Input is not a sound"
-        #raise ValueError
-        repTypeError("play(sound): Input is not a sound")
-    sound.play()
-
-
-#DONE!!!!!!!!!
-#(Note: "blocking main thread" includes infinite loop)
-def blockingPlay(sound):
-    """
-        Plays the sound provided as input, and makes sure that no other sound
-        plays at the exact same time. (Try two play's right after each other.)
-
-        :param sound: the sound that you want to play
-    """
-    if not isinstance(sound,Sound):
-        #print "blockingPlay(sound): Input is not a sound"
-        #raise ValueError
-        repTypeError("blockingPlay(sound): Input is not a sound")
-    sound.blockingPlay()
-
-
-# Buck Scharfnorth (27 May 2008): Added method for stopping play of a sound
-#Done
-def stopPlaying(sound):
-    """
-        Stops a sound that is currently playing.
-        
-        :param sound: the sound that you want to stop playing
-    """
-    if not isinstance(sound,Sound):
-        #print "stopPlaying(sound): Input is not a sound"
-        #raise ValueError
-        repTypeError("stopPlaying(sound): Input is not a sound")
-    sound.stopPlaying()
-
-
-#(Hieu) plays a sound at a given time (2.0 is twice as fast, 0.5 is half as fast) (only for rate = 0.5, 1.0 or 2.0) 
-# TODO: has not raise error for incorrect second input  
-def playAtRate(sound,rate):
-    if not isinstance(sound, Sound):
-        #print "playAtRate(sound,rate): First input is not a sound"
-        #raise ValueError
-        repTypeError("playAtRate(sound,rate): First input is not a sound")
-    newSound = duplicateSound(sound)
-    newSound.playAtRateInRange(rate)
-
-# def playAtRate(sound,rate):
-#     #if not isinstance(sound, Sound):
-#     #    #print "playAtRate(sound,rate): First input is not a sound"
-#     #    #raise ValueError
-#     #    repTypeError("playAtRate(sound,rate): First input is not a sound")
-#     ## sound.playAtRate(rate)
-#     #sound.playAtRateDur(rate,sound.getLength())
-#     pass #TODO
-# 
-# def playAtRateDur(sound,rate,dur):
-#     #if not isinstance(sound,Sound):
-#     #    #print "playAtRateDur(sound,rate,dur): First input is not a sound"
-#     #    #raise ValueError
-#     #    repTypeError("playAtRateDur(sound,rate,dur): First input is not a sound")
-#     #sound.playAtRateDur(rate,dur)
-#     pass #TODO
-
-#20June03 new functionality in JavaSound (ellie)
-def playInRange(sound,start,stop):
-    if not isinstance(sound, Sound):
-        repTypeError("playInRange(sound,start,stop): First input is not a sound")
-    elif not isinstance(start, int):
-        repTypeError("playInRange(sound,start,stop): Second input is not an integer")
-    elif start < 0:
-        repValError("playInRange(sound,start,stop): Second input cannot be negative")
-    elif start >= getNumSamples(sound):
-        repValError("playInRange(sound,start,stop): Second input cannot be greater than the length of the sound, which is " + getNumSamples(sound))
-    elif not isinstance(stop, int):
-        repTypeError("playInRange(sound,start,stop): Third input is not an integer")
-    elif stop < 0:
-        repValError("playInRange(sound,start,stop): Third input cannot be negative")
-    elif stop >= getNumSamples(sound):
-        repValError("playInRange(sound,start,stop): Third input cannot be greater than the length of the sound, which is " + getNumSamples(sound))
-    elif start > stop:
-        repValError("playInRange(sound,start,stop): Second input cannot exceed third input")
-    # sound.playInRange(start,stop)
-    #sound.playAtRateInRange(1,start-Sound._SoundIndexOffset,stop-Sound._SoundIndexOffset)
-    sound.play(start, stop)
-
-# #20June03 new functionality in JavaSound (ellie)
-#Done
-def blockingPlayInRange(sound,start,stop):
-    if not isinstance(sound, Sound):
-        repTypeError("playInRange(sound,start,stop): First input is not a sound")
-    elif not isinstance(start, int):
-        repTypeError("playInRange(sound,start,stop): Second input is not an integer")
-    elif start < 0:
-        repValError("playInRange(sound,start,stop): Second input cannot be negative")
-    elif start >= getNumSamples(sound):
-        repValError("playInRange(sound,start,stop): Second input cannot be greater than the length of the sound, which is " + getNumSamples(sound))
-    elif not isinstance(stop, int):
-        repTypeError("playInRange(sound,start,stop): Third input is not an integer")
-    elif stop < 0:
-        repValError("playInRange(sound,start,stop): Third input cannot be negative")
-    elif stop >= getNumSamples(sound):
-        repValError("playInRange(sound,start,stop): Third input cannot be greater than the length of the sound, which is " + getNumSamples(sound))
-    elif start > stop:
-        repValError("playInRange(sound,start,stop): Second input cannot exceed third input")
-    sound.blockingPlay(start, stop)
-# 
-#20June03 new functionality in JavaSound (ellie)
-#(Hieu 23Jan18): 
-def playAtRateInRange(sound,rate,start,stop):
-        if not isinstance(sound,Sound):
-                #print "playAtRateInRAnge(sound,rate,start,stop): First input is not a sound"
-                #raise ValueError
-            repTypeError("playAtRateInRAnge(sound,rate,start,stop): First input is not a sound")
-        newSound = duplicateSound(sound)
-        newSound.setSamplingRate(rate)
-        newSound.play(start,stop)
-        #sound.playAtRateInRange(rate,start - Sound._SoundIndexOffset,stop - Sound._SoundIndexOffset)
-        #pass #TODO
-
-# #20June03 new functionality in JavaSound (ellie)
-# def blockingPlayAtRateInRange(sound,rate,start,stop):
-        # if not isinstance(sound, Sound):
-        #         #print "blockingPlayAtRateInRange(sound,rate,start,stop): First input is not a sound"
-        #         #raise ValueError
-        #     repValError("blockingPlayAtRateInRange(sound,rate,start,stop): First input is not a sound")
-        # newSound = duplicateSound(sound)
-        # newSound.setSamplingRate(rate)
-        # newSound.blockingPlay(start,stop)
-        #sound.blockingPlayAtRateInRange(rate, start - Sound._SoundIndexOffset,stop - Sound._SoundIndexOffset)
-        #pass #TODO
-
-#New
-#Is the sound currently playing?
-def isPlaying(sound):
-    if not isinstance(sound, Sound):
-        #print "getSamplingRate(sound): Input is not a sound"
-        #raise ValueError
-        repTypeError("isPlaying(sound): Input is not a sound")
-    return sound.isPlaying()
-
-#Done
-def getSamplingRate(sound):
-    """
-        Takes a sound as input and returns the number representing the number of
-        samples in each second for the sound.
-
-        :param sound: the sound you want to get the sampling rate from
-        :return: the integer value representing the number of samples per second
-    """
-    if not isinstance(sound, Sound):
-        #print "getSamplingRate(sound): Input is not a sound"
-        #raise ValueError
-        repTypeError("getSamplingRate(sound): Input is not a sound")
-    return sound.getSamplingRate()
-
-#Done
-def setSampleValueAt(sound,index,value):
-    """
-        Takes a sound, an index, and a value (should be between -32768 and 32767),
-        and sets the value of the sample at the given index in the given sound
-        to the given value.
-
-        :param sound: the sound you want to change a sample in
-        :param index: the index of the sample you want to set
-        :param value: the value you want to set the sample to
-    """
-    if not isinstance(sound, Sound):
-        repTypeError("setSampleValueAt(sound,index,value): First input is not a sound")
-    if index < 0:
-        repValError("You asked for the sample at index: " + str( index ) + ".  This number is less than " + str(0) + ".  Please try" + " again using an index in the range [" + str(0) + "," + str ( getLength( sound ) - 1 ) + "].")
-    if index > getLength(sound) - 1:
-        repValError("You are trying to access the sample at index: " + str( index ) + ", but the last valid index is at " + str( getLength( sound ) - 1 ))
-    sound.setSampleValue(index, int(value))
-
-#Done
-def getSampleValueAt(sound,index):
-    """
-        Takes a sound and an index (an integer value), and returns the value of
-        the sample (between -32768 and 32767) for that object.
-
-        :param sound: the sound you want to get the sample from
-        :param index: the index of the sample you want to get the value of
-        :return: the value of sample object at that index
-    """
-    if not isinstance(sound,Sound):
-        repTypeError("getSampleValueAt(sound,index): First input is not a sound")
-    if index < 0:
-        repValError("You asked for the sample at index: " + str( index ) + ".  This number is less than 0.  Please try" + " again using an index in the range [" + str(0) + "," + str ( getLength( sound ) - 1) + "].")
-    if index > getLength(sound) - 1:
-        repValError("You are trying to access the sample at index: " + str( index ) + ", but the last valid index is at " + str( getLength( sound ) - 1 ))
-    return sound.getSampleValue(index)
-
-#Done
-def getSampleObjectAt(sound,index):
-    """
-        Takes a sound and an index (an integer value), and returns the Sample
-        object at that index.
-
-        :param sound: the sound you want to get the sample from
-        :param index: the index of the sample you want to get
-        :return: the sample object at that index
-    """
-    if not isinstance(sound, Sound):
-        repTypeError("getSampleObjectAt(sound,index): First input is not a sound")
-    if index < 0:
-        repValError("You asked for the sample at index: " + str( index ) + ".  This number is less than " + str(0) + ".  Please try" + " again using an index in the range [" + str(0) + "," + str ( getLength( sound ) - 1 ) + "].")
-    if index > getLength(sound) - 1:
-        repValError("You are trying to access the sample at index: " + str( index ) + ", but the last valid index is at " + str( getLength( sound ) - 1 ))
-    return sound.getSample(index)
-
-#New
-#Get sample size, in bits
-#Usually would be 16, but this code supports 8 as well
-def getSampleSize(sound):
-    if not isinstance(sound, Sound):
-        repTypeError("getSampleSize(sound): Input is not a sound")
-    return sound.getSampleSize()
-
-#Done
-def setSample(sample, value):
-    if not isinstance(sample,Sample):
-        repTypeError("setSample(sample,value): First input is not a Sample")
-    ss = getSampleSize(getSound(sample))
-    if ss == 8:
-        vmax = 255
-        vmin = 0
-    elif ss == 16:
-        vmax = 32767
-        vmin = -32768
-    #Clip
-    if value > vmax:
-        value = vmax
-    elif value < vmin:
-        value = vmin
-    # Need to coerce value to integer
-    sample.setValue( int(value) )
-
-# PamC: Added this function to be a better name than setSample
-#Done
-def setSampleValue(sample, value):
-    """
-        Takes a Sample object and a value (should be between -32768 and 32767),
-        and sets the sample to that value.
-
-        :param sample: the sound sample you want to change the value of
-        :param value: the value you want to set the sample to
-    """
-    setSample(sample, value)
-
-#Done
-def getSample(sample):
-    if not isinstance(sample, Sample):
-        repTypeError("getSample(sample): Input is not a Sample")
-    return sample.getValue()
-
-# PamC: Added this to be a better name for getSample
-#Done
-def getSampleValue(sample):
-    """
-        Takes a Sample object and returns its value (between -32768 and 32767). 
-        (Formerly getSample)
-
-        :param sample: a sample of a sound
-        :return: the integer value of that sample
-    """
-    return getSample(sample)
-
-#New
-def getSampleIndex(sample):
-    if not isinstance(sample, Sample):
-        repTypeError("getSampleIndex(sample): Input is not a Sample")
-    return sample.getIndex()
-
-#Done
-def getSound(sample):
-    """
-        Takes a Sample object and returns the Sound that it belongs to.
-
-        :param sample: a sample belonging to a sound
-        :return: the sound the sample belongs to
-    """
-    if not isinstance(sample,Sample):
-        repTypeError("getSound(sample): Input is not a Sample")
-    return sample.getSound()
-
-#Done
-def getLength(sound):
-    """
-        Takes a sound as input and returns the number of samples in that sound.
-
-        :param sound: the sound you want to find the length of (how many
-                        samples it has)
-        :return: the number of samples in sound
-    """
-    if not isinstance(sound, Sound):
-        repTypeError("getLength(sound): Input is not a Sound")
-    return sound.getLengthInFrames()
-
-# PamC: Added this function as a more meaningful name for getLength
-#Done
-def getNumSamples(sound):
-    """
-        Takes a sound as input and returns the number of samples in that sound.
-
-        :param sound: the sound you want to find the length of (how many
-                        samples it has)
-        :return: the number of samples in sound
-    """
-    return getLength(sound)
-
-# PamC: Added this function to return the number of seconds
-# in a sound
-#Done
-def getDuration(sound):
-    """
-        Takes a sound as input and returns the number of seconds that sound lasts.
-
-        :param sound: the sound you want to find the length of (in seconds)
-        :return: the number of seconds the sound lasts
-    """
-    if not isinstance(sound, Sound):
-        repTypeError("getDuration(sound): Input is not a Sound")
-    return getLength(sound) / getSamplingRate(sound)
-
-#New
-#Frequency: Hertz
-#Amplitude: Max/min of the sine wave (should be between 0 and 32767)
-#Dur: Length, in seconds
-def pureTone(freq, amp, dur):
-    if not isinstance(freq, numbers.Number):
-        repTypeError("pureTone(freq, amp, dur): freq must be a number")
-    elif freq < 0:
-        repValError("pureTone(freq, amp, dur): freq must be nonnegative")
-    if not isinstance(amp, numbers.Number):
-        repTypeError("pureTone(freq, amp, dur): amp must be a number")
-    elif amp < 0 or amp > 32767:
-        repValError("pureTone(freq, amp, dur): amp must be between 0 and 32767 (inclusive)")
-    if not isinstance(dur, numbers.Number):
-        repTypeError("pureTone(freq, amp, dur): dur must be a number")
-    elif dur < 0:
-        repValError("pureTone(freq, amp, dur): dur must be nonnegative")
-    def getVal(i):
-        return int(amp*math.sin((freq*2*math.pi)*i/Sound.SAMPLE_RATE))
-        
-    sound = makeEmptySoundBySeconds(dur)
-    for i in range(int(dur * Sound.SAMPLE_RATE)):
-        setSample(getSampleObjectAt(sound, i), getVal(i))
-    return sound
-
-#Done
-def writeSoundTo(sound,filename):
-    """
-        Takes a sound and a filename (a string) and writes the sound to that
-        file as a WAV file. (Make sure that the filename ends in '.wav' if you
-        want the operating system to treat it right.)
-        
-        :param sound: the sound you want to write out to a file
-        :param filename: the path to the file you want the picture written to
-    """
-    global mediaFolder
-    if not os.path.isabs(filename):
-        filename = mediaFolder + filename
-    if not isinstance(sound, Sound):
-        repTypeError("writeSoundTo(sound,filename): First input is not a Sound")
-    sound.writeToFile(filename)
-
-#New
-def saveSound(sound):
-    fil = pickASaveFile()
-    if fil == None:
-        print("No file selected; nothing saved.")
-        return
-    #Try to get a format
-    #If no format given, yell at the user
-    # dotloc = fil.rfind(".")
-    # if dotloc == -1:
-    #     repValError("Error: No file extension provided")
-    #     #raise ValueError("Error: No file extension provided")
-    if len(fil) < 4 or (fil[-4:] != '.wav' and fil[-4:] != '.WAV'):
-        repValError("Error: Must specify .wav extension")
-    writeSoundTo(sound, fil)
 
 ##
 # Globals for styled text
@@ -1845,21 +853,8 @@ class Picture:
         try:
             #Check if it's supported
             suppt = isSupportedImageFormat(filename)
-            if not suppt and Qt_VERSION == 4:
-                #print("Warning! Attempting to open unsupported file type!")
-                ##Make a PNG and mess with that instead
-                #First, open a PIL image
-                self.pil_im = PIL.Image.open(filename)
-                #Next, create a temporary PNG file
-                tmpfl = tempfile.mkstemp(suffix = '.png')
-                #Now, keep track of the file name to work with
-                self.workfile = tmpfl[1]
-                #Finally, export the PIL image as a PNG to the temp file
-                self.pil_im.save(tmpfl[1])
-            elif not suppt and Qt_VERSION == 5:
-                print("Congratulations! You've discovered a bug in the media "
-                    "module! This also means that an old bug in an external "
-                    "codebase from 2017 or earlier is still not fixed...")
+            if not suppt:
+                print("Warning! Attempting to open unsupported file type!")
             else:
                 #Nothing went wrong, so pil_im should be None
                 self.pil_im = None
@@ -1909,7 +904,10 @@ class Picture:
             pixarray = self.line
         else:
             pixline = self.image.scanLine(y)
-            pixarray = pixline.asarray(4*self.width)
+            if Qt_VERSION == 5:
+                pixarray = pixline.asarray(4*self.width)
+            elif Qt_VERSION == 6:
+                pixarray = pixline
             self.line = pixarray
             self.lineindex = y
         #pixline = self.image.scanLine(y)
@@ -1938,7 +936,10 @@ class Picture:
             pixarray = self.line
         else:
             pixline = self.image.scanLine(y)
-            pixarray = pixline.asarray(4*self.width)
+            if Qt_VERSION == 5:
+                pixarray = pixline.asarray(4*self.width)
+            elif Qt_VERSION == 6:
+                pixarray = pixline
             self.line = pixarray
             self.lineindex = y
         #pixline = self.image.scanLine(y)
@@ -3320,9 +2321,11 @@ def pickAFile(sdir = None):
         our_dir = mediaFolder
     else:
         our_dir = os.getcwd()
-    ret = QtWidgets.QFileDialog.getOpenFileName(directory = our_dir)
     if Qt_VERSION == 5:
-        ret = ret[0]
+        ret = QtWidgets.QFileDialog.getOpenFileName(directory = our_dir)
+    elif Qt_VERSION == 6:
+        ret = QtWidgets.QFileDialog.getOpenFileName(dir = our_dir)
+    ret = ret[0]
     if ret == '':
         ret = None
     if ret is not None:
@@ -3359,9 +2362,11 @@ def pickASaveFile(sdir = None):
         our_dir = mediaFolder
     else:
         our_dir = os.getcwd()
-    ret = QtWidgets.QFileDialog.getSaveFileName(directory = our_dir)
     if Qt_VERSION == 5:
-        ret = ret[0]
+        ret = QtWidgets.QFileDialog.getSaveFileName(directory = our_dir)
+    elif Qt_VERSION == 6:
+        ret = QtWidgets.QFileDialog.getSaveFileName(dir = our_dir)
+    ret = ret[0]
     if ret == '':
         ret = None
     if ret is not None:
@@ -3402,7 +2407,10 @@ def pickAFolder(sdir = None):
         our_dir = mediaFolder
     else:
         our_dir = os.getcwd()
-    dirc = QtWidgets.QFileDialog.getExistingDirectory(directory = our_dir)
+    if Qt_VERSION == 5:
+        dirc = QtWidgets.QFileDialog.getExistingDirectory(directory = our_dir)
+    elif Qt_VERSION == 6:
+        dirc = QtWidgets.QFileDialog.getExistingDirectory(dir = our_dir)
     if dirc == '':
         dirc = None
     if dirc is not None:
@@ -3601,9 +2609,14 @@ class PictureExplorer(QtWidgets.QWidget):
     # def test(self, x):
     #     print("hello " + str(x))
     
+    if Qt_VERSION == 5:
+        slot_decorator = QtCore.pyqtSlot
+    elif Qt_VERSION == 6:
+        slot_decorator = QtCore.Slot
+
     #Position was updated via x/y boxes
     #Update color and label accordingly
-    @QtCore.pyqtSlot()
+    @slot_decorator()
     def updatedPos(self):
         #Only do this if we manually changed the numbers
         if not self.block_edit:
@@ -3757,13 +2770,24 @@ class PictureExplorer(QtWidgets.QWidget):
         mainMenu = QtWidgets.QMenuBar(self)
         fileMenu = mainMenu.addMenu('&Zoom')
         #Create button
-        extractAction25 = QtWidgets.QAction("25%", self)
-        extractAction50 = QtWidgets.QAction("50%", self)
-        extractAction75 = QtWidgets.QAction("75%", self)
-        extractAction100 = QtWidgets.QAction("100%", self)
-        extractAction150 = QtWidgets.QAction("150%", self)
-        extractAction200 = QtWidgets.QAction("200%", self)
-        extractAction500 = QtWidgets.QAction("500%", self)
+
+        if Qt_VERSION == 5:
+            extractAction25 = QtWidgets.QAction("25%", self)
+            extractAction50 = QtWidgets.QAction("50%", self)
+            extractAction75 = QtWidgets.QAction("75%", self)
+            extractAction100 = QtWidgets.QAction("100%", self)
+            extractAction150 = QtWidgets.QAction("150%", self)
+            extractAction200 = QtWidgets.QAction("200%", self)
+            extractAction500 = QtWidgets.QAction("500%", self)
+        elif Qt_VERSION == 6:
+            extractAction25 = QtGui.QAction("25%", self)
+            extractAction50 = QtGui.QAction("50%", self)
+            extractAction75 = QtGui.QAction("75%", self)
+            extractAction100 = QtGui.QAction("100%", self)
+            extractAction150 = QtGui.QAction("150%", self)
+            extractAction200 = QtGui.QAction("200%", self)
+            extractAction500 = QtGui.QAction("500%", self)
+            
         #Connect button
         extractAction25.triggered.connect(self.zoom25)
         extractAction50.triggered.connect(self.zoom50)
@@ -3801,316 +2825,6 @@ class PictureExplorer(QtWidgets.QWidget):
     def mouseDraged(self, startP, stopP):
         self.imageClicked(stopP)
 
-##START OF SOUND
-
-#Emulate the JES Sound Explorer
-class SoundExplorer(QtWidgets.QWidget):
-    #TODO make look nice
-    #TODO selections #Done
-    
-    #TODO make these variable/scrollable #Done
-    PIC_WIDTH = 600
-    PIC_HEIGHT = 200
-    EXTRA_HEIGHT = 300
-    
-    #Constructor
-    #Should create window, populate with default values
-    #remember it globally (to avoid garbage collection issues)
-    #and show it
-    def __init__(self, sound):
-        super().__init__()
-        
-        self.sound = sound
-        self.block_edit = False
-        
-        title = "Sound"
-        if sound.fileName is not None:
-            title = sound.fileName
-        self.setWindowTitle("Sound Explorer: " + title)
-        layout = QtWidgets.QVBoxLayout()
-        self.setLayout(layout)
-        self.setFixedWidth(self.PIC_WIDTH + 62)
-        #print(int(self.contentsMargins()))
-        
-        #What's selected?
-        self.index = 0
-        self.value = getSampleValueAt(sound, self.index)
-        
-        #Top row of buttons
-        self.playFrame = QtWidgets.QFrame(self)
-        layoutPlay = QtWidgets.QHBoxLayout()
-        self.playFrame.setLayout(layoutPlay)
-        self.playButton = QtWidgets.QPushButton("Play Entire Sound", self.playFrame)
-        self.playButton.clicked.connect(sound.play)
-        self.playBeforeButton = QtWidgets.QPushButton("Play Before", self.playFrame)
-        def lpb():
-            sound.play(0, self.index)
-        self.playBeforeButton.clicked.connect(lpb)
-        self.playAfterButton = QtWidgets.QPushButton("Play After", self.playFrame)
-        def lpa():
-            sound.play(self.index)
-        self.playAfterButton.clicked.connect(lpa)
-        self.stopButton = QtWidgets.QPushButton("Stop Playing", self.playFrame)
-        self.stopButton.clicked.connect(sound.stopPlaying)
-        self.playBeforeButton.setDisabled(True)
-        self.playAfterButton.setDisabled(True)
-        #self.stopButton.setDisabled(True)
-        layoutPlay.addWidget(self.playButton)
-        layoutPlay.addWidget(self.playBeforeButton)
-        layoutPlay.addWidget(self.playAfterButton)
-        layoutPlay.addWidget(self.stopButton)
-        layout.addWidget(self.playFrame)
-        
-        #Second row of buttons
-        #TODO selections #Done
-        self.selectFrame = QtWidgets.QFrame(self)
-        layoutSelect = QtWidgets.QHBoxLayout()
-        self.selectFrame.setLayout(layoutSelect)
-        self.startIndex = 0
-        self.stopIndex = 0
-        self.playSelectionButton = QtWidgets.QPushButton("Play Selection", self.selectFrame)
-        self.playSelectionButton.setDisabled(True)
-        def playSelect():
-            sound.play(self.startIndex, self.stopIndex)
-        self.playSelectionButton.clicked.connect(playSelect)    
-        layoutSelect.addWidget(self.playSelectionButton)
-        self.clearSelectionButton = QtWidgets.QPushButton("Clear Selection", self.selectFrame)
-        self.clearSelectionButton.setDisabled(True)
-        def clearSelect():
-            self.picLabel.rubberBand.hide()
-            self.StartIndexwidget.setText("N/A")
-            self.StopIndexwidget.setText("N/A")
-            self.clearSelectionButton.setDisabled(True)
-            self.playSelectionButton.setDisabled(True)
-        self.clearSelectionButton.clicked.connect(clearSelect)       
-        layoutSelect.addWidget(self.clearSelectionButton)
-        self.StartIndexlabel = QtWidgets.QLabel(self.selectFrame)
-        self.StartIndexlabel.setText("Start Index:")
-        layoutSelect.addWidget(self.StartIndexlabel)
-        self.StartIndexwidget = QtWidgets.QLabel(self.selectFrame)
-        self.StartIndexwidget.setText("N/A")
-        layoutSelect.addWidget(self.StartIndexwidget)
-        self.StopIndexlabel = QtWidgets.QLabel(self.selectFrame)
-        self.StopIndexlabel.setText("Stop Index:")
-        layoutSelect.addWidget(self.StopIndexlabel)
-        self.StopIndexwidget = QtWidgets.QLabel(self.selectFrame)
-        self.StopIndexwidget.setText("N/A")
-        layoutSelect.addWidget(self.StopIndexwidget)
-        layout.addWidget(self.selectFrame)
-        
-        #(Hieu): Add scrollArea
-        #Sound image
-        self.imgFrame = QtWidgets.QFrame(self)
-        layoutImg = QtWidgets.QHBoxLayout()
-        self.imgFrame.setLayout(layoutImg)
-        self.picLabel = ClickableLabel(self, self)
-        self.pic = sound.getImageRep(SoundExplorer.PIC_WIDTH, SoundExplorer.PIC_HEIGHT)
-        # Create a variable currentPicWidth that hold the current width of sound image
-        self.currentPicWidth = SoundExplorer.PIC_WIDTH
-        # self.drawingPic = duplicatePicture(self.pic)
-        self.drawingPic = self.pic
-        # pixmap = QPixmap.fromImage(self.drawingPic.image)
-        self.picLabel.setPixmap(self.drawingPic)
-        self.picLabel.setFixedWidth(self.currentPicWidth)
-        #Set Up Scroll Area
-        self.scroll = QtWidgets.QScrollArea()
-        self.scroll.setWidget(self.picLabel)
-        self.scroll.setWidgetResizable(True)
-        self.scroll.setFixedHeight(SoundExplorer.PIC_HEIGHT + 2)
-        self.scroll.setFixedWidth(SoundExplorer.PIC_WIDTH + 2)
-        #End scroll area
-        layoutImg.addWidget(self.scroll)
-        layout.addWidget(self.imgFrame)
-        
-        #Index/value row
-        self.indexValueFrame = QtWidgets.QFrame(self)
-        layoutIV = QtWidgets.QHBoxLayout()
-        self.indexValueFrame.setLayout(layoutIV)
-        self.ilabel = QtWidgets.QLabel(self.indexValueFrame)
-        self.ilabel.setText("Current Index:")
-        layoutIV.addWidget(self.ilabel)
-        self.iwidget = QtWidgets.QSpinBox(self.indexValueFrame)
-        #self.iwidget.setButtonSymbols(QAbstractSpinBox.lineNoButtons) #Hide arrow
-        self.iwidget.setRange(0, getLength(sound))
-        self.iwidget.setValue(self.index)
-        #QObject.connect(self.ywidget, SIGNAL('valueChanged(int)'), self, SLOT('updatedPos()'))
-        self.iwidget.valueChanged.connect(self.updatedPos)
-        layoutIV.addWidget(self.iwidget)
-        self.vlabel = QtWidgets.QLabel(self.indexValueFrame)
-        self.vlabel.setText("Sample Value:")
-        layoutIV.addWidget(self.vlabel)
-        self.vwidget = QtWidgets.QLabel(self.indexValueFrame)
-        self.vwidget.setText(str(self.value))
-        #QObject.connect(self.ywidget, SIGNAL('valueChanged(int)'), self, SLOT('updatedPos()'))
-        #self.iwidget.valueChanged(int).connect(self.updatedPos())
-        layoutIV.addWidget(self.vwidget)
-        layout.addWidget(self.indexValueFrame)
-        
-        #Samples between pixels row
-        self.sbetweenFrame = QtWidgets.QFrame(self)
-        layoutSB = QtWidgets.QHBoxLayout()
-        self.sbetweenFrame.setLayout(layoutSB)
-        self.sblabel = QtWidgets.QLabel(self.sbetweenFrame)
-        self.sblabel.setText("The number of samples between pixels:")
-        layoutSB.addWidget(self.sblabel)
-        #TODO make variable #Done
-        self.sbwidget = QtWidgets.QLineEdit(self.sbetweenFrame)
-        self.sbwidget.insert(str(getLength(sound) // self.currentPicWidth))
-        self.sbwidget.setFixedWidth(120)
-        self.sbwidget.returnPressed.connect(self.updatedSBW)
-        # self.sbwidget = QLabel(self.sbetweenFrame)
-        # self.sbwidget.setText(str(getLength(sound) // SoundExplorer.PIC_WIDTH))
-        layoutSB.addWidget(self.sbwidget)
-        layout.addWidget(self.sbetweenFrame)
-        
-        #Zoom row
-        self.zoomFrame = QtWidgets.QFrame(self)
-        layoutZoom = QtWidgets.QHBoxLayout()
-        self.zoomFrame.setLayout(layoutZoom)
-        self.isZoomIn = 0;
-        self.zoomButton = QtWidgets.QPushButton("Zoom In", self.zoomFrame)
-        self.zoomButton.clicked.connect(self.zoomClick)
-        layoutZoom.addWidget(self.zoomButton)
-        layout.addWidget(self.zoomFrame)
-        
-        #Resize the window
-        SoundExplorer.PIC_WIDTH
-        self.resize(SoundExplorer.PIC_WIDTH, SoundExplorer.PIC_HEIGHT + SoundExplorer.EXTRA_HEIGHT)
-        #self.resize(self.drawingPic.getWidth(), self.drawingPic.getHeight() + SoundExplorer.EXTRA_HEIGHT)
-        #Remember the window
-        keepAround.append(self)
-        #Show the window
-        self.show()
-        self.activateWindow()
-        self.raise_()
-        self.activateWindow()
-        QtWidgets.QApplication.processEvents()
-    
-    #Zoom-in-out click button
-    def zoomClick(self):
-        if self.isZoomIn:
-            self.zoomButton.setText("Zoom In")
-            self.isZoomIn = 0
-            self.currentPicWidth = SoundExplorer.PIC_WIDTH
-            self.sbwidget.setText(str(getLength(self.sound) // self.currentPicWidth))
-            self.updateSoundImage()
-        else:
-            self.zoomButton.setText("Zoom Out")
-            self.isZoomIn = 1
-            self.currentPicWidth = getLength(self.sound)
-            self.sbwidget.setText("1")
-            self.updateSoundImage()
-    
-    # #(Hieu)Scale-Image function:
-    # # sampix = # of samples between pitxel
-    # def scaleImg(self,sampix):
-    #     sound.getImageRep(SoundExplorer.PIC_WIDTH, SoundExplorer.PIC_HEIGHT)
-    
-    #Update Sound Image
-    def updateSoundImage(self):
-        self.pic = self.sound.getImageRep(self.currentPicWidth, SoundExplorer.PIC_HEIGHT)
-        self.drawingPic = self.pic
-        self.picLabel.setPixmap(self.drawingPic)
-        self.picLabel.setFixedWidth(self.currentPicWidth)
-    
-    #Sample between Pixel was updated via sbw box
-    #Update things
-    def updatedSBW(self):
-        #Only do this if we manually changed the numbers
-        if not self.block_edit:
-            #New sample between Pixel value
-            self.sampleBP = int(self.sbwidget.text())
-            self.currentPicWidth = getLength(self.sound) // self.sampleBP
-            #Update
-            self.updateSoundImage()
-            #Repaint the window
-            self.update()
-            QtWidgets.QApplication.processEvents()
-    
-    #Update value position and show it
-    # def updateSelection(self):
-    #     self.drawingPic = duplicatePicture(self.pic)
-    #     #Draw the selection line
-    #     x_coord = int(self.index * (SoundExplorer.PIC_WIDTH / getLength(self.sound)))
-    #     addLine(self.drawingPic, x_coord, 0, x_coord, SoundExplorer.PIC_HEIGHT-1, cyan)
-    #     pixmap = QPixmap.fromImage(self.drawingPic.image)
-    #     self.picLabel.setPixmap(pixmap)
-    
-    def updateSelection(self):
-        self.drawingPic = QtGui.QPixmap(self.pic)
-        #Draw the selection line
-        x_coord = int(self.index * (self.currentPicWidth / getLength(self.sound)))
-        addLine1(self.drawingPic, x_coord, 0, x_coord, SoundExplorer.PIC_HEIGHT-1, cyan)
-        self.picLabel.setPixmap(self.drawingPic)
-    
-    # @pyqtSlot(int)
-    # def test(self, x):
-    #     print("hello " + str(x))
-    
-    #Position was updated via index box
-    #Update things
-    #@pyqtSlot()
-    def updatedPos(self):
-        #Only do this if we manually changed the numbers
-        if not self.block_edit:
-            #New index
-            self.index = self.iwidget.value()
-            self.value = getSampleValueAt(self.sound, self.index)
-            self.vwidget.setText(str(self.value))
-            #Update
-            self.updateSelection()
-            #Repaint the window
-            self.update()
-            QtWidgets.QApplication.processEvents()
-    
-    #Clicked on image
-    def imageClicked(self, pt):
-        #Make sure we don't issue duplicate updates
-        self.block_edit = True
-        #Update the index
-        self.index = int(pt.x() * (getLength(self.sound) / self.currentPicWidth))
-        self.value = getSampleValueAt(self.sound, self.index)
-        #Change the widgets to the new coords
-        self.iwidget.setValue(self.index)
-        self.vwidget.setText(str(self.value))
-        #Enable Buttons
-        self.playBeforeButton.setDisabled(False)
-        self.playAfterButton.setDisabled(False)
-        #Update the stuff that can change
-        self.updateSelection()
-        #Repaint the window
-        self.update()
-        QtWidgets.QApplication.processEvents()
-        #Manual updates are safe again
-        self.block_edit = False
-     
-    # Drag mouse on image
-    def mouseDraged(self, startP, stopP):
-        #Make sure we don't issue duplicate updates
-        self.block_edit = True
-        # Update Start & Stop Index
-        self.startIndex = int(startP.x() * (getLength(self.sound) / self.currentPicWidth))
-        self.stopIndex = int(stopP.x() * (getLength(self.sound) / self.currentPicWidth))
-        if self.startIndex > self.stopIndex:
-            self.startIndex, self.stopIndex = self.stopIndex, self.startIndex
-        self.StartIndexwidget.setText(str(self.startIndex))
-        self.StopIndexwidget.setText(str(self.stopIndex))
-        # Enable Buttons
-        self.playSelectionButton.setDisabled(False)
-        self.clearSelectionButton.setDisabled(False)
-        #Start select region on image
-        self.picLabel.rubberBand.show()
-        Qtop = QtCore.QPoint(int(startP.x()),0)
-        Qbot = QtCore.QPoint(int(stopP.x()),200)
-        self.picLabel.rubberBand.setGeometry(QtCore.QRect(Qtop, Qbot).normalized())
-        #Repaint the window
-        self.update()
-        QtWidgets.QApplication.processEvents()
-        #Manual updates are safe again
-        self.block_edit = False
-
-#END OF SOUND
-
 #Open explorer tool for media (currently only pictures and sound)
 #TODO: Movie
 def explore(media):
@@ -4122,10 +2836,6 @@ def explore(media):
     """
     if isinstance(media, Picture):
         openPictureTool(media)
-    elif isinstance(media, Sound):
-        openSoundTool(media)
-    elif isinstance(media, Movie):
-        openFrameSequencerTool(media)
     else:
         repValError("Exploration of this media is not supported")
         #raise ValueError
@@ -4168,36 +2878,6 @@ def openFrameSequencerTool(movie):
         #  IMPLEMENTATION.
     root.exec_()
 
-#Try to mimic functionality of JES sound explorer
-def openSoundTool(sound):
-    """
-        Opens the Sound Tool explorer, which lets you examine the waveform of a sound.
-        
-        :param sound : the sound that you want to examine
-    """
-    #import SoundExplorer
-    thecopy = duplicateSound(sound)
-    #Constructor has side effect of showing it
-    SoundExplorer(thecopy)
-
-    # USE THE WINDOW TO BLOCK THE CALLING PROGRAM
-        #  THIS IS NECESSARY FOR THONNY WITH THIS PARTICULAR
-        #  IMPLEMENTATION.
-    root.exec_()
-
-# #Done
-# def explore(someMedia):
-#     if isinstance(someMedia, Picture):
-#         openPictureTool(someMedia)
-#     elif isinstance(someMedia, Sound):
-#         openSoundTool(someMedia)
-#     elif isinstance(someMedia, Movie):
-#         openFrameSequencerTool(someMedia)
-#     else:
-#         print("explore(someMedia): Input is not a Picture, Sound, or Movie")
-#         raise ValueError
-#
- 
 # let's try the turtles...
 #Can we escape from Worlds?
 WORLDS_ESCAPABLE = False
